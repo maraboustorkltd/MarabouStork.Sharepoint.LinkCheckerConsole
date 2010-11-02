@@ -7,15 +7,17 @@ using System.Net;
 using System.IO;
 
 using Microsoft.SharePoint.Utilities;
+using Microsoft.SharePoint.Administration;
 using Microsoft.SharePoint;
+using System.Threading;
 
 namespace MarabouStork.Sharepoint.LinkCheckerConsole
 {
-    class LinkChecker
+    public class LinkChecker
     {
         static Regex urlRegEx = new Regex(@"http(s)?://([\w+?\.\w+])+([a-zA-Z0-9\~\!\@\#\$\%\^\&amp;\*\(\)_\-\=\+\\\/\?\.\:\;\'\,]*)?|]*?HREF\s*=\s*[""']?([^'"" >]+?)[ '""]?[^>]*?>");
 
-        static readonly string userAgent = ""; // Do we need to set a user agent for the scraper.
+        static readonly string userAgent = "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0)"; 
         static string baseSiteUrl = "http://localhost:8081";
         static bool shouldUnpublish = true;
 
@@ -58,15 +60,13 @@ namespace MarabouStork.Sharepoint.LinkCheckerConsole
                 }
             }
 
-            var query = "<Query>" +
-                        "   <Where>" +
-                        "      <Gt>" +
-                        "          <FieldRef Name='Modified' IncludeTimeValue='TRUE'/>" +
-                        "          <Value Type='DateTime'>{0}</Value>" +
-                        "      </Gt>" +
-                        "   </Where>" +
-                        "</Query>";
-
+            var query = "<Where>" +
+                        "   <Gt>" +
+                        "       <FieldRef Name='Modified' IncludeTimeValue='TRUE'/>" +
+                        "       <Value Type='DateTime'>{0}</Value>" +
+                        "   </Gt>" +
+                        "</Where>";
+                        
             var retrvDt = SPUtility.CreateISO8601DateTimeFromSystemDateTime(modsSinceDate);
             var caml = new SPQuery { DatesInUtc = true, Query = string.Format(query, retrvDt) };
 
@@ -227,11 +227,13 @@ namespace MarabouStork.Sharepoint.LinkCheckerConsole
                             if (shouldUnpublish)
                                 docListItem.File.UnPublish("The document was unpublished because it contains an invalid link. The link checker returned the following message \r\n\r\n" + validationMessage);
                         }
+                        else
+                        {
+                            //TODO: Cannot find the requested workitems list
+                        }
                     }
                 }
             });
-
-            Console.WriteLine("The document was unpublished because it contains an invalid link. The link checker returned the following message \r\n\r\n" + validationMessage);
         }
 
         /// <summary>
@@ -270,36 +272,37 @@ namespace MarabouStork.Sharepoint.LinkCheckerConsole
             Uri uri;
             if (Uri.TryCreate(url, UriKind.Absolute, out uri))
             {
-                HttpWebRequest objRequest = (HttpWebRequest)System.Net.HttpWebRequest.Create(url);
-                CookieContainer cookieContainer = new CookieContainer();
-
-                if (!String.IsNullOrEmpty(userAgent))
-                {
-                    objRequest.UserAgent = userAgent;
-                }
-
-                objRequest.CookieContainer = cookieContainer;
-                objRequest.AllowAutoRedirect = true;
-                objRequest.MaximumAutomaticRedirections = 5;
-
-                HttpWebResponse objResponse = null;
-
                 // Try to fetch the page from the given URL, in case of any error return null string
                 try
                 {
-                    objResponse = (HttpWebResponse)objRequest.GetResponse();
-
-                    // In case of page not found error, return null string
-                    if (objResponse.StatusCode != HttpStatusCode.OK)
-                    {
-                        retVal = false;
-                        message = objResponse.StatusDescription + " Please review the url " + url;
-                    }
+                    checklink(url, ref message, ref retVal);
                 }
-                catch (Exception ex)
+                catch (WebException ex)
                 {
-                    message = "An error occured while querying the specified url: " + ex.Message + " Please review the url " + url;
-                    retVal = false;
+                    //The Exception handler seems to be triggered regardless
+                    if (ex.Status == WebExceptionStatus.Timeout)
+                    {
+                        try
+                        {
+                            Thread.Sleep(new TimeSpan(0, 0, 10));
+
+                            checklink(url, ref message, ref retVal);
+                        }
+                        catch (WebException innerEx)
+                        {
+                            if (innerEx.Status == WebExceptionStatus.Timeout)
+                            {
+                                ex = null; // Clear the original exception
+                            }
+                            else
+                                ex = innerEx;
+                        }
+                    }
+                    if (ex != null)
+                    {
+                        message = "An error occured  while querying the specified url: " + ex.Message + " Please review the url " + url;
+                        retVal = false;
+                    }
                 }
             }
             else
@@ -309,6 +312,35 @@ namespace MarabouStork.Sharepoint.LinkCheckerConsole
             }
 
             return retVal;
+        }
+
+        private static void checklink(string url, ref string message, ref bool retVal)
+        {
+            // Cookies ?
+            HttpWebRequest objRequest = (HttpWebRequest)System.Net.HttpWebRequest.Create(url);
+            CookieContainer cookieContainer = new CookieContainer();
+
+            if (!String.IsNullOrEmpty(userAgent))
+            {
+                objRequest.UserAgent = userAgent;
+            }
+
+            objRequest.CookieContainer = cookieContainer;
+            objRequest.AllowAutoRedirect = true;
+            objRequest.MaximumAutomaticRedirections = 5;
+            objRequest.Method = "HEAD";
+            HttpWebResponse objResponse = null;
+
+
+            objResponse = (HttpWebResponse)objRequest.GetResponse();
+
+            // In case of page not found error, return null string
+            if (objResponse.StatusCode != HttpStatusCode.OK)
+            {
+                retVal = false;
+                message = objResponse.StatusDescription + " Please review the url " + url;
+            }
+            objResponse.Close();
         }
 
         /// <summary>
